@@ -37,7 +37,7 @@ def build_address(count: int, prefix: str, before: set[str], iface: str, ttl: in
 # ADDRESS ENTRY POINT
 # ==============================================================================
 
-if __name__ == "__main__":
+if __name__ == "address":
     utils.isroot()
 
     if DEBUG:
