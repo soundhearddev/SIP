@@ -58,6 +58,25 @@ pub fn genChallenge(io: std.Io) [CHALLENGE_LEN]u8 {
     return challenge;
 }
 
+pub fn signChallenge(
+    ed_keypair: Ed25519.KeyPair,
+    challenge: [CHALLENGE_LEN]u8,
+) ![Ed25519.Signature.encoded_length]u8 {
+    const sig = try ed_keypair.sign(&challenge, null);
+    return sig.toBytes();
+}
+
+pub fn verifyChallenge(
+    ed_pub_bytes: [32]u8,
+    challenge: [CHALLENGE_LEN]u8,
+    sig_bytes: [Ed25519.Signature.encoded_length]u8,
+) bool {
+    const pub_key = Ed25519.PublicKey.fromBytes(ed_pub_bytes) catch return false;
+    const sig = Ed25519.Signature.fromBytes(sig_bytes);
+    sig.verify(&challenge, pub_key) catch return false;
+    return true;
+}
+
 pub fn genConnId(io: std.Io) u64 {
     const rng_src: std.Random.IoSource = .{ .io = io };
     return rng_src.interface().int(u64);
