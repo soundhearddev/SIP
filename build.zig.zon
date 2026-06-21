@@ -10,9 +10,9 @@
     .dependencies = .{},
 
     .paths = .{
-        "build.zig",
-        "build.zig.zon",
+        //"build.zig",
+        //"build.zig.zon",
         "src",
-        "README.md",
+        //"README.md",
     },
 }
