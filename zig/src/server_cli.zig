@@ -121,6 +121,68 @@ fn parseIpv4(text: []const u8) ![4]u8 {
     return result;
 }
 
+fn parseIpv6(text: []const u8) ![16]u8 {
+    var result: [16]u8 = [_]u8{0} ** 16;
+
+    // Position von "::" finden (Kompression), falls vorhanden.
+    const double_colon = std.mem.indexOf(u8, text, "::");
+
+    if (double_colon) |dc_pos| {
+        const left = text[0..dc_pos];
+        const right = text[dc_pos + 2 ..];
+
+        var left_groups: [8]u16 = undefined;
+        var left_count: usize = 0;
+        if (left.len > 0) {
+            var it = std.mem.splitScalar(u8, left, ':');
+            while (it.next()) |part| {
+                if (left_count >= 8) return error.InvalidIpv6Address;
+                left_groups[left_count] = std.fmt.parseInt(u16, part, 16) catch return error.InvalidIpv6Address;
+                left_count += 1;
+            }
+        }
+
+        var right_groups: [8]u16 = undefined;
+        var right_count: usize = 0;
+        if (right.len > 0) {
+            var it = std.mem.splitScalar(u8, right, ':');
+            while (it.next()) |part| {
+                if (right_count >= 8) return error.InvalidIpv6Address;
+                right_groups[right_count] = std.fmt.parseInt(u16, part, 16) catch return error.InvalidIpv6Address;
+                right_count += 1;
+            }
+        }
+
+        if (left_count + right_count > 8) return error.InvalidIpv6Address;
+
+        var groups: [8]u16 = [_]u16{0} ** 8;
+        @memcpy(groups[0..left_count], left_groups[0..left_count]);
+        @memcpy(groups[8 - right_count ..], right_groups[0..right_count]);
+
+        for (groups, 0..) |g, i| {
+            std.mem.writeInt(u16, result[i * 2 ..][0..2], g, .big);
+        }
+    } else {
+        // Keine Kompression: genau 8 Gruppen erwartet.
+        var it = std.mem.splitScalar(u8, text, ':');
+        var idx: usize = 0;
+        while (it.next()) |part| {
+            if (idx >= 8) return error.InvalidIpv6Address;
+            const g = std.fmt.parseInt(u16, part, 16) catch return error.InvalidIpv6Address;
+            std.mem.writeInt(u16, result[idx * 2 ..][0..2], g, .big);
+            idx += 1;
+        }
+        if (idx != 8) return error.InvalidIpv6Address;
+    }
+
+    return result;
+}
+
+/// Entscheidet anhand des Strings, ob IPv4 oder IPv6 gemeint ist.
+fn looksLikeIpv6(text: []const u8) bool {
+    return std.mem.indexOfScalar(u8, text, ':') != null;
+}
+
 /// Schreibt einen Block mit einem 4-Byte-Laengenpraefix (big-endian) auf den
 /// Socket - notwendig, weil TCP ein reiner Bytestream ist: der Empfaenger
 /// muss wissen, wo EIN verschluesseltes SIP-Paket endet und das naechste
@@ -185,12 +247,20 @@ fn performKeyExchange(
     return try keyexchange.deriveSharedKey(local, peer_public_key);
 }
 
-fn runServer(io: std.Io, allocator: std.mem.Allocator, port: u16) !void {
-    const listener = try synet.createTcpSocket();
+fn runServer(io: std.Io, allocator: std.mem.Allocator, port: u16, use_v6: bool) !void {
+    const listener = if (use_v6)
+        try synet.createTcpSocketFamily(std.posix.AF.INET6)
+    else
+        try synet.createTcpSocket();
     defer synet.close(listener);
 
-    const bind_addr = synet.buildSockaddrIn(.{ 0, 0, 0, 0 }, port);
-    try synet.bind(listener, &bind_addr);
+    if (use_v6) {
+        const bind_addr = synet.buildSockaddrIn6([_]u8{0} ** 16, port); // "::"
+        try synet.bind6(listener, &bind_addr);
+    } else {
+        const bind_addr = synet.buildSockaddrIn(.{ 0, 0, 0, 0 }, port);
+        try synet.bind(listener, &bind_addr);
+    }
     try synet.listen(listener, 1);
 
     std.debug.print("[server] warte auf Verbindung auf Port {d}...\n", .{port});
@@ -237,14 +307,25 @@ fn runClient(
     port: u16,
     message: []const u8,
 ) !void {
-    const sock = try synet.createTcpSocket();
+    const is_v6 = looksLikeIpv6(host);
+
+    const sock = if (is_v6)
+        try synet.createTcpSocketFamily(std.posix.AF.INET6)
+    else
+        try synet.createTcpSocket();
     defer synet.close(sock);
 
-    const ip = try parseIpv4(host);
-    const addr = synet.buildSockaddrIn(ip, port);
-
     std.debug.print("[client] verbinde zu {s}:{d}...\n", .{ host, port });
-    try synet.connect(sock, &addr);
+
+    if (is_v6) {
+        const ip6 = try parseIpv6(host);
+        const addr6 = synet.buildSockaddrIn6(ip6, port);
+        try synet.connect6(sock, &addr6);
+    } else {
+        const ip4 = try parseIpv4(host);
+        const addr4 = synet.buildSockaddrIn(ip4, port);
+        try synet.connect(sock, &addr4);
+    }
 
     std.debug.print("[client] verbunden, starte Schluesselaustausch...\n", .{});
     const key = try performKeyExchange(io, allocator, sock, true);
@@ -281,7 +362,7 @@ pub fn main(init: std.process.Init) !void {
     };
 
     switch (args.mode) {
-        .server => try runServer(io, gpa, args.port),
+        .server => try runServer(io, gpa, args.port, false),
         .client => try runClient(io, gpa, args.host, args.port, args.message),
     }
 }

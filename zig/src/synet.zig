@@ -136,16 +136,33 @@ pub fn close(sock: Socket) void {
     _ = linux.close(sock);
 }
 
-// ----------------------------------------------------------------------
-// Hinweis IPv6 / Layer 3:
-//
-// Diese Datei behandelt aktuell nur AF.INET (IPv4). Der urspruengliche
-// Design-Rundown von translation.zig sieht ausdruecklich vor, dass die
-// Wahl des Transports (UDP, Raw-IPv6, TCP, ...) spaeter frei und ohne
-// Umbau von translation.zig getroffen werden soll. Dieselbe Trennung gilt
-// hier: synet.zig kennt nur "Bytes ueber einen TCP-Socket", nicht WELCHE
-// SIP-Adresse zu welcher IP gehoert (das ist laut Rundown ohnehin noch
-// ungeloestes Discovery-Problem). Ein AF.INET6-Pfad liesse sich als eigene
-// Funktion (z.B. buildSockaddrIn6 + ein sockaddr.in6-Aequivalent von
-// bind/connect) ergaenzen, ohne die bestehenden IPv4-Funktionen anzufassen.
-// ----------------------------------------------------------------------
+pub fn buildSockaddrIn6(addr: [16]u8, port: u16) std.posix.sockaddr.in6 {
+    return .{
+        .family = std.posix.AF.INET6,
+        .port = std.mem.nativeToBig(u16, port),
+        .flowinfo = 0,
+        .addr = addr,
+        .scope_id = 0,
+    };
+}
+
+/// Wie createTcpSocket(), aber mit waehlbarer Adressfamilie (AF.INET oder
+/// AF.INET6) - fuer IPv6-Unterstuetzung. Nutzt denselben rohen
+/// linux.socket()-Syscall-Pfad wie createTcpSocket(), NICHT std.posix.socket
+/// (das existiert in dieser Zig-Version nicht mehr, siehe Datei-Hinweis
+/// oben).
+pub fn createTcpSocketFamily(family: u32) SynetError!Socket {
+    const rc = linux.socket(family, posix.SOCK.STREAM, 0);
+    const checked = try checkSyscall(error.SocketCreateFailed, rc);
+    return @intCast(checked);
+}
+
+pub fn bind6(sock: Socket, addr: *const posix.sockaddr.in6) SynetError!void {
+    const rc = linux.bind(sock, @ptrCast(addr), @sizeOf(posix.sockaddr.in6));
+    _ = try checkSyscall(error.BindFailed, rc);
+}
+
+pub fn connect6(sock: Socket, addr: *const posix.sockaddr.in6) SynetError!void {
+    const rc = linux.connect(sock, @ptrCast(addr), @sizeOf(posix.sockaddr.in6));
+    _ = try checkSyscall(error.ConnectFailed, rc);
+}
