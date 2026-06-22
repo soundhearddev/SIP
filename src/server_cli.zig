@@ -3,6 +3,7 @@ const synet = @import("synet.zig");
 const keyexchange = @import("keyexchange.zig");
 const header = @import("header.zig");
 const translation = @import("translation.zig");
+const sip = @import("sip.zig");
 
 const DEFAULT_PORT: u16 = 9443;
 
@@ -15,6 +16,7 @@ const Args = struct {
     message: []const u8,
     use_v6: bool,
     output_path: ?[]const u8,
+    identity_name: []const u8,
 };
 
 fn getLang() []const u8 {
@@ -31,12 +33,13 @@ fn printUsage() void {
     if (std.mem.startsWith(u8, lang, "de")) {
         std.debug.print(
             \\Verwendung:
-            \\  server_cli --listen [--port PORT]
-            \\  server_cli --connect [--host HOST] [--port PORT] --message TEXT
+            \\  server_cli --listen [--port PORT] --identity NAME
+            \\  server_cli --connect [--host HOST] [--port PORT] --message TEXT --identity NAME
             \\
             \\Optionen:
             \\  --listen          Server-Modus: wartet auf eine eingehende Verbindung
             \\  --connect         Client-Modus: verbindet sich zu einem Server
+            \\  --identity NAME   SIP-Identitätsname (wird bei Bedarf erstellt)
             \\  --host HOST       Ziel-Host im Client-Modus (Standard: 127.0.0.1)
             \\  --port PORT       Port (Standard: {d})
             \\  --message TEXT    SIP-Payload (roher Text); mit @PFAD wird stattdessen
@@ -48,15 +51,16 @@ fn printUsage() void {
     } else {
         std.debug.print(
             \\Usage:
-            \\  server_cli --listen [--port PORT]
-            \\  server_cli --connect [--host HOST] [--port PORT] --message TEXT
+            \\  server_cli --listen [--port PORT] --identity NAME
+            \\  server_cli --connect [--host HOST] [--port PORT] --message TEXT --identity NAME
             \\
             \\Options:
             \\  --listen          Server mode: waits for an incoming connection
             \\  --connect         Client mode: connects to a server
-            \\  --host HOST      Target host in client mode (default: 127.0.0.1)
-            \\  --port PORT      Port (default: {d})
-            \\  --message TEXT   SIP payload (raw text); if prefixed with @PATH, the
+            \\  --identity NAME   SIP identity name (will be created if needed)
+            \\  --host HOST       Target host in client mode (default: 127.0.0.1)
+            \\  --port PORT       Port (default: {d})
+            \\  --message TEXT    SIP payload (raw text); if prefixed with @PATH, the
             \\                    content of the file at PATH is sent instead
             \\  --v6              Server: listen on IPv6 (::) instead of IPv4 (0.0.0.0)
             \\  --output PATH    Server: additionally write received payload to file PATH
@@ -72,6 +76,7 @@ fn parseArgs(allocator: std.mem.Allocator, raw_args: []const []const u8) !Args {
     var message: []const u8 = "";
     var use_v6: bool = false;
     var output_path: ?[]const u8 = null;
+    var identity_name: ?[]const u8 = null;
 
     var i: usize = 1;
     while (i < raw_args.len) {
@@ -86,6 +91,10 @@ fn parseArgs(allocator: std.mem.Allocator, raw_args: []const []const u8) !Args {
         } else if (std.mem.eql(u8, arg, "--connect")) {
             mode = .client;
             i += 1;
+        } else if (std.mem.eql(u8, arg, "--identity")) {
+            if (i + 1 >= raw_args.len) return error.MissingArgumentValue;
+            identity_name = raw_args[i + 1];
+            i += 2;
         } else if (std.mem.eql(u8, arg, "--host")) {
             if (i + 1 >= raw_args.len) return error.MissingArgumentValue;
             host = raw_args[i + 1];
@@ -115,10 +124,19 @@ fn parseArgs(allocator: std.mem.Allocator, raw_args: []const []const u8) !Args {
     if (resolved_mode == .client and message.len == 0) {
         return error.MissingMessage;
     }
+    const resolved_identity = identity_name orelse return error.MissingIdentity;
 
     _ = allocator;
 
-    return Args{ .mode = resolved_mode, .host = host, .port = port, .message = message, .use_v6 = use_v6, .output_path = output_path };
+    return Args{
+        .mode = resolved_mode,
+        .host = host,
+        .port = port,
+        .message = message,
+        .use_v6 = use_v6,
+        .output_path = output_path,
+        .identity_name = resolved_identity,
+    };
 }
 
 fn parseIpv4(text: []const u8) ![4]u8 {
@@ -137,7 +155,6 @@ fn parseIpv4(text: []const u8) ![4]u8 {
 fn parseIpv6(text: []const u8) ![16]u8 {
     var result: [16]u8 = [_]u8{0} ** 16;
 
-    // Position von "::" finden (Kompression), falls vorhanden.
     const double_colon = std.mem.indexOf(u8, text, "::");
 
     if (double_colon) |dc_pos| {
@@ -176,7 +193,6 @@ fn parseIpv6(text: []const u8) ![16]u8 {
             std.mem.writeInt(u16, result[i * 2 ..][0..2], g, .big);
         }
     } else {
-        // Keine Kompression: genau 8 Gruppen erwartet.
         var it = std.mem.splitScalar(u8, text, ':');
         var idx: usize = 0;
         while (it.next()) |part| {
@@ -205,36 +221,29 @@ fn readFileBytes(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]
 
     const data = try allocator.alloc(u8, stat.size);
     errdefer allocator.free(data);
-
-    var reader = file.reader(io, &.{});
-    const bytes_read = try reader.interface.readSliceAll(data);
-    _ = bytes_read;
+    _ = try file.readPositionalAll(io, data, 0);
 
     return data;
 }
 
 fn writeFileBytes(io: std.Io, path: []const u8, data: []const u8) !void {
-    var file = std.Io.Dir.cwd().createFile(io, path, .{}) catch |err| {
-        if (err == error.IsDir) {
-            std.debug.print("[server] FEHLER: \"{s}\" ist ein Verzeichnis, kein Dateipfad. Bitte einen vollen Dateinamen angeben (z.B. \"{s}/empfangen.jpg\").\n", .{ path, path });
-        }
-        return err;
-    };
+    var file = try std.Io.Dir.cwd().createFile(io, path, .{});
     defer file.close(io);
 
-    var writer = file.writer(io, &.{});
-    try writer.interface.writeAll(data);
-    try writer.interface.flush();
-
-    std.debug.print("[debug] writeFileBytes: \"{s}\" geschrieben ({d} Byte)\n", .{ path, data.len });
+    var buf: [4096]u8 = undefined;
+    var w = file.writer(io, &buf);
+    try w.interface.writeAll(data);
+    try w.flush();
 }
 
 const ResolvedMessage = struct {
     bytes: []const u8,
-    owned: bool, // true = muss mit allocator.free() freigegeben werden
+    owned: bool,
 
     fn deinit(self: ResolvedMessage, allocator: std.mem.Allocator) void {
-        if (self.owned) allocator.free(self.bytes);
+        if (self.owned) {
+            allocator.free(self.bytes);
+        }
     }
 };
 
@@ -277,44 +286,179 @@ fn recvFramed(allocator: std.mem.Allocator, sock: synet.Socket) ![]u8 {
     return buf;
 }
 
+/// Interaktiver Password-Prompt (einfache Version)
+fn promptPassword(allocator: std.mem.Allocator, prompt_text: []const u8) ![]u8 {
+    // Print prompt
+    std.debug.print("{s}: ", .{prompt_text});
+
+    const stdin_fd = std.posix.STDIN_FILENO;
+
+    var buf: [1024]u8 = undefined;
+    const n = std.posix.read(stdin_fd, &buf) catch |err| {
+        std.debug.print("Error reading password: {}\n", .{err});
+        return error.ReadPasswordFailed;
+    };
+
+    var password = try allocator.alloc(u8, n);
+    @memcpy(password, buf[0..n]);
+
+    // Strip trailing newline
+    if (password.len > 0 and password[password.len - 1] == '\n') {
+        password = password[0 .. password.len - 1];
+    }
+
+    return password;
+}
+
+/// Load or create a SIP identity. If it doesn't exist, prompt to create it.
+fn loadOrCreateIdentity(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    identity_name: []const u8,
+) !keyexchange.Identity {
+    if (sip.identityExists(io, identity_name)) {
+        std.debug.print("[sip] Identität '{s}' existiert, laden...\n", .{identity_name});
+        const password = try promptPassword(allocator, "[sip] Passwort");
+        defer allocator.free(password);
+
+        return keyexchange.Identity.load(io, identity_name, password) catch |err| {
+            std.debug.print("[sip] Fehler beim Laden der Identität: {}\n", .{err});
+            return err;
+        };
+    } else {
+        std.debug.print("[sip] Identität '{s}' existiert nicht, erstelle neue...\n", .{identity_name});
+
+        // Validate the name
+        if (!sip.validName(identity_name)) {
+            std.debug.print("[sip] Ungültiger Identitätsname (erlaubt: alphanumerisch, -, _, .)\n", .{});
+            return error.InvalidIdentityName;
+        }
+
+        const password = try promptPassword(allocator, "[sip] Wähle ein Passwort");
+        defer allocator.free(password);
+
+        const password_confirm = try promptPassword(allocator, "[sip] Passwort bestätigen");
+        defer allocator.free(password_confirm);
+
+        if (!std.mem.eql(u8, password, password_confirm)) {
+            std.debug.print("[sip] Passwörter stimmen nicht überein!\n", .{});
+            return error.PasswordMismatch;
+        }
+
+        return keyexchange.Identity.create(io, identity_name, password) catch |err| {
+            std.debug.print("[sip] Fehler beim Erstellen der Identität: {}\n", .{err});
+            return err;
+        };
+    }
+}
+
+/// Perform authenticated handshake: exchange HandshakeMessages and derive session keys
 fn performKeyExchange(
     io: std.Io,
     allocator: std.mem.Allocator,
     sock: synet.Socket,
+    local_identity: keyexchange.Identity,
     is_initiator: bool,
 ) ![keyexchange.DERIVED_KEY_SIZE]u8 {
-    const local = try keyexchange.generateLocalKeyPair(io);
-    std.debug.print("[debug] keyexchange: eigenes Schlüsselpaar erzeugt (is_initiator={})\n", .{is_initiator});
+    std.debug.print("[keyexchange] Generiere ephemeres Schlüsselpaar...\n", .{});
+    var local_ephemeral = try keyexchange.EphemeralKeyPair.generate(io);
+    defer local_ephemeral.deinit();
 
-    var peer_public_key: [keyexchange.PUBLIC_KEY_SIZE]u8 = undefined;
+    std.debug.print("[keyexchange] Erstelle HandshakeMessage...\n", .{});
+    const local_msg = try keyexchange.HandshakeMessage.create(local_identity, local_ephemeral);
+
+    var peer_msg: keyexchange.HandshakeMessage = undefined;
 
     if (is_initiator) {
-        std.debug.print("[debug] keyexchange: sende eigenen Public Key zuerst\n", .{});
-        try sendFramed(sock, &local.public_key);
-        const received = try recvFramed(allocator, sock);
-        defer allocator.free(received);
-        if (received.len != keyexchange.PUBLIC_KEY_SIZE) {
-            std.debug.print("[debug] keyexchange: ungültige Peer-Key-Länge {d} (erwartet {d})\n", .{ received.len, keyexchange.PUBLIC_KEY_SIZE });
-            return error.InvalidPeerPublicKey;
+        std.debug.print("[keyexchange] [initiator] Sende HandshakeMessage...\n", .{});
+        var local_msg_buf: [keyexchange.IDENTITY_PUBLIC_KEY_SIZE + keyexchange.PUBLIC_KEY_SIZE + keyexchange.SIGNATURE_SIZE]u8 = undefined;
+        @memcpy(local_msg_buf[0..keyexchange.IDENTITY_PUBLIC_KEY_SIZE], &local_msg.identity_public_key);
+        @memcpy(
+            local_msg_buf[keyexchange.IDENTITY_PUBLIC_KEY_SIZE .. keyexchange.IDENTITY_PUBLIC_KEY_SIZE + keyexchange.PUBLIC_KEY_SIZE],
+            &local_msg.ephemeral_public_key,
+        );
+        @memcpy(
+            local_msg_buf[keyexchange.IDENTITY_PUBLIC_KEY_SIZE + keyexchange.PUBLIC_KEY_SIZE ..],
+            &local_msg.signature,
+        );
+        try sendFramed(sock, &local_msg_buf);
+
+        std.debug.print("[keyexchange] [initiator] Warte auf Peer-Message...\n", .{});
+        const peer_buf = try recvFramed(allocator, sock);
+        defer allocator.free(peer_buf);
+
+        const expected_msg_len = keyexchange.IDENTITY_PUBLIC_KEY_SIZE + keyexchange.PUBLIC_KEY_SIZE + keyexchange.SIGNATURE_SIZE;
+        if (peer_buf.len != expected_msg_len) {
+            std.debug.print("[keyexchange] Ungültige Message-Länge: {d} (erwartet {d})\n", .{ peer_buf.len, expected_msg_len });
+            return error.InvalidPeerMessage;
         }
-        @memcpy(&peer_public_key, received);
+
+        @memcpy(&peer_msg.identity_public_key, peer_buf[0..keyexchange.IDENTITY_PUBLIC_KEY_SIZE]);
+        @memcpy(
+            &peer_msg.ephemeral_public_key,
+            peer_buf[keyexchange.IDENTITY_PUBLIC_KEY_SIZE .. keyexchange.IDENTITY_PUBLIC_KEY_SIZE + keyexchange.PUBLIC_KEY_SIZE],
+        );
+        @memcpy(
+            &peer_msg.signature,
+            peer_buf[keyexchange.IDENTITY_PUBLIC_KEY_SIZE + keyexchange.PUBLIC_KEY_SIZE ..],
+        );
     } else {
-        std.debug.print("[debug] keyexchange: warte zuerst auf Peer Public Key\n", .{});
-        const received = try recvFramed(allocator, sock);
-        defer allocator.free(received);
-        if (received.len != keyexchange.PUBLIC_KEY_SIZE) {
-            std.debug.print("[debug] keyexchange: ungültige Peer-Key-Länge {d} (erwartet {d})\n", .{ received.len, keyexchange.PUBLIC_KEY_SIZE });
-            return error.InvalidPeerPublicKey;
+        std.debug.print("[keyexchange] [responder] Warte auf Peer-Message...\n", .{});
+        const peer_buf = try recvFramed(allocator, sock);
+        defer allocator.free(peer_buf);
+
+        const expected_msg_len = keyexchange.IDENTITY_PUBLIC_KEY_SIZE + keyexchange.PUBLIC_KEY_SIZE + keyexchange.SIGNATURE_SIZE;
+        if (peer_buf.len != expected_msg_len) {
+            std.debug.print("[keyexchange] Ungültige Message-Länge: {d} (erwartet {d})\n", .{ peer_buf.len, expected_msg_len });
+            return error.InvalidPeerMessage;
         }
-        @memcpy(&peer_public_key, received);
-        try sendFramed(sock, &local.public_key);
+
+        @memcpy(&peer_msg.identity_public_key, peer_buf[0..keyexchange.IDENTITY_PUBLIC_KEY_SIZE]);
+        @memcpy(
+            &peer_msg.ephemeral_public_key,
+            peer_buf[keyexchange.IDENTITY_PUBLIC_KEY_SIZE .. keyexchange.IDENTITY_PUBLIC_KEY_SIZE + keyexchange.PUBLIC_KEY_SIZE],
+        );
+        @memcpy(
+            &peer_msg.signature,
+            peer_buf[keyexchange.IDENTITY_PUBLIC_KEY_SIZE + keyexchange.PUBLIC_KEY_SIZE ..],
+        );
+
+        std.debug.print("[keyexchange] [responder] Sende HandshakeMessage...\n", .{});
+        var local_msg_buf: [keyexchange.IDENTITY_PUBLIC_KEY_SIZE + keyexchange.PUBLIC_KEY_SIZE + keyexchange.SIGNATURE_SIZE]u8 = undefined;
+        @memcpy(local_msg_buf[0..keyexchange.IDENTITY_PUBLIC_KEY_SIZE], &local_msg.identity_public_key);
+        @memcpy(
+            local_msg_buf[keyexchange.IDENTITY_PUBLIC_KEY_SIZE .. keyexchange.IDENTITY_PUBLIC_KEY_SIZE + keyexchange.PUBLIC_KEY_SIZE],
+            &local_msg.ephemeral_public_key,
+        );
+        @memcpy(
+            local_msg_buf[keyexchange.IDENTITY_PUBLIC_KEY_SIZE + keyexchange.PUBLIC_KEY_SIZE ..],
+            &local_msg.signature,
+        );
+        try sendFramed(sock, &local_msg_buf);
     }
 
-    std.debug.print("[debug] keyexchange: Peer Public Key erhalten, leite gemeinsamen Schlüssel ab\n", .{});
-    return try keyexchange.deriveSharedKey(local, peer_public_key);
+    std.debug.print("[keyexchange] Verifiziere Peer-Signatur...\n", .{});
+    try peer_msg.verify();
+
+    std.debug.print("[keyexchange] Peer-Identität verifiziert. Leite Session-Keys ab...\n", .{});
+    var session = try keyexchange.completeHandshake(local_identity, local_ephemeral, peer_msg, null);
+    defer session.deinit();
+
+    var addr_buf: [64]u8 = undefined;
+    const addr_str = try sip.formatSipAddress(&addr_buf, session.peer_address);
+    std.debug.print("[keyexchange] Peer-Adresse: {s}\n", .{addr_str});
+
+    // Return only the TX key (we use tx for sending, rx for receiving in the rest of the code)
+    // The caller will use these for encryption
+    return session.tx;
 }
 
-fn runServer(io: std.Io, allocator: std.mem.Allocator, port: u16, use_v6: bool, output_path: ?[]const u8) !void {
+fn runServer(io: std.Io, allocator: std.mem.Allocator, port: u16, use_v6: bool, output_path: ?[]const u8, identity_name: []const u8) !void {
+    const identity = try loadOrCreateIdentity(io, allocator, identity_name);
+    var addr_buf: [64]u8 = undefined;
+    const addr_str = try identity.formatAddress(&addr_buf);
+    std.debug.print("[server] Meine SIP-Adresse: {s}\n", .{addr_str});
+
     std.debug.print("[server] Modus: {s}\n", .{if (use_v6) "IPv6 (::)" else "IPv4 (0.0.0.0)"});
 
     const listener = if (use_v6)
@@ -325,7 +469,7 @@ fn runServer(io: std.Io, allocator: std.mem.Allocator, port: u16, use_v6: bool, 
     std.debug.print("[server] Socket erstellt (fd={d})\n", .{listener});
 
     if (use_v6) {
-        const bind_addr = synet.buildSockaddrIn6([_]u8{0} ** 16, port); // "::"
+        const bind_addr = synet.buildSockaddrIn6([_]u8{0} ** 16, port);
         try synet.bind6(listener, &bind_addr);
     } else {
         const bind_addr = synet.buildSockaddrIn(.{ 0, 0, 0, 0 }, port);
@@ -342,7 +486,7 @@ fn runServer(io: std.Io, allocator: std.mem.Allocator, port: u16, use_v6: bool, 
 
     std.debug.print("[server] Verbindung angenommen, starte Schlüsselaustausch...\n", .{});
 
-    const key = try performKeyExchange(io, allocator, conn, false);
+    const key = try performKeyExchange(io, allocator, conn, identity, false);
     std.debug.print("[server] Schlüsselaustausch abgeschlossen.\n", .{});
 
     const encrypted = try recvFramed(allocator, conn);
@@ -381,7 +525,13 @@ fn runClient(
     host: []const u8,
     port: u16,
     message: []const u8,
+    identity_name: []const u8,
 ) !void {
+    const identity = try loadOrCreateIdentity(io, allocator, identity_name);
+    var addr_buf: [64]u8 = undefined;
+    const addr_str = try identity.formatAddress(&addr_buf);
+    std.debug.print("[client] Meine SIP-Adresse: {s}\n", .{addr_str});
+
     const is_v6 = looksLikeIpv6(host);
     std.debug.print("[client] erkannte Adressfamilie: {s}\n", .{if (is_v6) "IPv6" else "IPv4"});
 
@@ -407,7 +557,7 @@ fn runClient(
     std.debug.print("[client] TCP-Verbindung hergestellt\n", .{});
 
     std.debug.print("[client] verbunden, starte Schlüsselaustausch...\n", .{});
-    const key = try performKeyExchange(io, allocator, sock, true);
+    const key = try performKeyExchange(io, allocator, sock, identity, true);
     std.debug.print("[client] Schlüsselaustausch abgeschlossen.\n", .{});
 
     const resolved = try resolveMessage(io, allocator, message);
@@ -436,12 +586,12 @@ pub fn main(init: std.process.Init) !void {
 
     const args = parseArgs(gpa, raw_args) catch |err| {
         std.debug.print("Argument-Fehler: {}\n\n", .{err});
-        // printUsage();
+        printUsage();
         std.process.exit(1);
     };
 
     switch (args.mode) {
-        .server => try runServer(io, gpa, args.port, args.use_v6, args.output_path),
-        .client => try runClient(io, gpa, args.host, args.port, args.message),
+        .server => try runServer(io, gpa, args.port, args.use_v6, args.output_path, args.identity_name),
+        .client => try runClient(io, gpa, args.host, args.port, args.message, args.identity_name),
     }
 }
