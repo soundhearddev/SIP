@@ -286,9 +286,7 @@ fn recvFramed(allocator: std.mem.Allocator, sock: synet.Socket) ![]u8 {
     return buf;
 }
 
-/// Interaktiver Password-Prompt (einfache Version)
 fn promptPassword(allocator: std.mem.Allocator, prompt_text: []const u8) ![]u8 {
-    // Print prompt
     std.debug.print("{s}: ", .{prompt_text});
 
     const stdin_fd = std.posix.STDIN_FILENO;
@@ -302,7 +300,6 @@ fn promptPassword(allocator: std.mem.Allocator, prompt_text: []const u8) ![]u8 {
     var password = try allocator.alloc(u8, n);
     @memcpy(password, buf[0..n]);
 
-    // Strip trailing newline
     if (password.len > 0 and password[password.len - 1] == '\n') {
         password = password[0 .. password.len - 1];
     }
@@ -310,7 +307,6 @@ fn promptPassword(allocator: std.mem.Allocator, prompt_text: []const u8) ![]u8 {
     return password;
 }
 
-/// Load or create a SIP identity. If it doesn't exist, prompt to create it.
 fn loadOrCreateIdentity(
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -328,7 +324,6 @@ fn loadOrCreateIdentity(
     } else {
         std.debug.print("[sip] Identität '{s}' existiert nicht, erstelle neue...\n", .{identity_name});
 
-        // Validate the name
         if (!sip.validName(identity_name)) {
             std.debug.print("[sip] Ungültiger Identitätsname (erlaubt: alphanumerisch, -, _, .)\n", .{});
             return error.InvalidIdentityName;
@@ -352,7 +347,6 @@ fn loadOrCreateIdentity(
     }
 }
 
-/// Perform authenticated handshake: exchange HandshakeMessages and derive session keys
 fn performKeyExchange(
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -448,8 +442,6 @@ fn performKeyExchange(
     const addr_str = try sip.formatSipAddress(&addr_buf, session.peer_address);
     std.debug.print("[keyexchange] Peer-Adresse: {s}\n", .{addr_str});
 
-    // Return only the TX key (we use tx for sending, rx for receiving in the rest of the code)
-    // The caller will use these for encryption
     return session.tx;
 }
 

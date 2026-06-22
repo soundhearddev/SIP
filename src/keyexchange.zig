@@ -54,21 +54,14 @@ pub const EphemeralKeyPair = struct {
         };
     }
 
-    /// Best-effort wipe of the ephemeral secret once it's no longer needed.
     pub fn deinit(self: *EphemeralKeyPair) void {
         std.crypto.secureZero(u8, &self.secret_key);
     }
 };
 
-/// What gets sent to the peer to start/continue a handshake. Self-describing:
-/// it carries the claimed identity (so the peer can compute the `sip`
-/// address) plus the signed ephemeral public key.
 pub const HandshakeMessage = struct {
     identity_public_key: [IDENTITY_PUBLIC_KEY_SIZE]u8,
     ephemeral_public_key: [PUBLIC_KEY_SIZE]u8,
-    /// Ed25519 signature over `ephemeral_public_key`, made with the
-    /// identity secret key. Proves "the holder of this identity vouches
-    /// for this ephemeral key", which is what defeats MITM.
     signature: [SIGNATURE_SIZE]u8,
 
     const Self = @This();
@@ -85,9 +78,6 @@ pub const HandshakeMessage = struct {
         };
     }
 
-    /// Verifies the embedded signature actually matches the embedded
-    /// identity key and ephemeral key. Must be called before the message
-    /// is trusted for anything (address derivation, key exchange, ...).
     pub fn verify(self: Self) KeyExchangeError!void {
         const pk = Ed25519.PublicKey.fromBytes(self.identity_public_key) catch {
             return KeyExchangeError.InvalidPeerPublicKey;
@@ -98,19 +88,13 @@ pub const HandshakeMessage = struct {
         };
     }
 
-    /// `sip` address derived from the (already verified) identity key.
     pub fn peerAddress(self: Self) [SIP_ADDRESS_SIZE]u8 {
         return sip.baseAddress(self.identity_public_key);
     }
 };
 
-/// Result of a completed handshake: a pair of directional keys plus the
-/// verified peer identity, so the caller never has to mix up which key
-/// goes which way.
 pub const SessionKeys = struct {
-    /// Key for data this side sends to the peer.
     tx: [DERIVED_KEY_SIZE]u8,
-    /// Key for data this side receives from the peer.
     rx: [DERIVED_KEY_SIZE]u8,
     peer_address: [SIP_ADDRESS_SIZE]u8,
 
@@ -120,14 +104,6 @@ pub const SessionKeys = struct {
     }
 };
 
-/// Completes the handshake: verifies the peer's message, optionally checks
-/// it against an `expected_peer_address` (pass `null` to trust-on-first-use),
-/// performs the X25519 ECDH, and derives directional session keys bound to
-/// both `sip` addresses and both ephemeral public keys.
-///
-/// `local_identity` is only used for address derivation/binding here -- the
-/// actual DH uses the ephemeral keys, keeping the long-term identity key
-/// strictly a signing key, never touched by ECDH.
 pub fn completeHandshake(
     local_identity: Identity,
     local_ephemeral: EphemeralKeyPair,
@@ -150,9 +126,6 @@ pub fn completeHandshake(
         return KeyExchangeError.InvalidPeerPublicKey;
     };
 
-    // Transcript binding: both addresses + both ephemeral public keys go
-    // into the PRK, in a fixed (sorted) order, so both sides compute the
-    // exact same extract step regardless of who initiated.
     var transcript: [SIP_ADDRESS_SIZE * 2 + PUBLIC_KEY_SIZE * 2]u8 = undefined;
     const local_address = local_identity.address;
     const a_first = std.mem.lessThan(u8, &local_address, &peer_address);
@@ -176,8 +149,6 @@ pub fn completeHandshake(
     HkdfSha256.expand(&key_a_to_b, "sip-handshake a->b", prk);
     HkdfSha256.expand(&key_b_to_a, "sip-handshake b->a", prk);
 
-    // "a" is whichever address sorted first; map that back to tx/rx from
-    // the local peer's point of view.
     const tx = if (a_first) key_a_to_b else key_b_to_a;
     const rx = if (a_first) key_b_to_a else key_a_to_b;
 
@@ -265,7 +236,6 @@ test "unexpected peer identity is rejected" {
         .address = sip.baseAddress(mallory_id_kp.public_key.toBytes()),
     };
 
-    // Mallory tries to answer in Bob's place; Alice has pinned Bob's address.
     const msg_from_mallory = try HandshakeMessage.create(mallory, mallory_eph);
     const bob_id_kp = Ed25519.KeyPair.generate(io);
     const expected_bob_address = sip.baseAddress(bob_id_kp.public_key.toBytes());
