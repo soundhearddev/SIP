@@ -6,10 +6,9 @@ const protocol = @import("protocol");
 const sip = @import("sip");
 pub const Command = protocol.Command;
 
-
-pub const OUTER_HEADER_SIZE: usize = 34; 
-pub const INNER_HEADER_SIZE: usize = 8;  
-pub const HEADER_SIZE:       usize = OUTER_HEADER_SIZE + INNER_HEADER_SIZE; // 42
+pub const OUTER_HEADER_SIZE: usize = 34;
+pub const INNER_HEADER_SIZE: usize = 8;
+pub const HEADER_SIZE: usize = OUTER_HEADER_SIZE + INNER_HEADER_SIZE; // 42
 
 // Offset  Size  Field
 // 0       1     Magic
@@ -20,10 +19,10 @@ pub const HEADER_SIZE:       usize = OUTER_HEADER_SIZE + INNER_HEADER_SIZE; // 4
 // 34      8     Connection ID
 
 pub const OuterHeader = struct {
-    magic:   u8,
+    magic: u8,
     command: u8,
-    src:     [16]u8,
-    dst:     [16]u8,
+    src: [16]u8,
+    dst: [16]u8,
 };
 
 pub const InnerHeader = struct {
@@ -36,12 +35,11 @@ pub const Header = struct {
 };
 
 pub const ParsedPacket = struct {
-    header:  Header,
-    command: protocol.Command,  
+    header: Header,
+    command: protocol.Command,
     payload: []const u8,
 };
 
-// --- write/read Outer ---
 fn writeOuter(buf: []u8, o: OuterHeader) void {
     buf[0] = o.magic;
     buf[1] = o.command;
@@ -51,14 +49,13 @@ fn writeOuter(buf: []u8, o: OuterHeader) void {
 
 fn readOuter(buf: []const u8) OuterHeader {
     var o: OuterHeader = undefined;
-    o.magic   = buf[0];
+    o.magic = buf[0];
     o.command = buf[1];
     @memcpy(&o.src, buf[2..18]);
     @memcpy(&o.dst, buf[18..34]);
     return o;
 }
 
-// --- write/read Inner ---
 fn writeInner(buf: []u8, i: InnerHeader) void {
     std.mem.writeInt(u64, buf[0..8], i.conn_id, .little);
 }
@@ -67,7 +64,6 @@ fn readInner(buf: []const u8) InnerHeader {
     return .{ .conn_id = std.mem.readInt(u64, buf[0..8], .little) };
 }
 
-// --- write/read complete ---
 fn writeHeader(buf: []u8, h: Header) void {
     writeOuter(buf[0..OUTER_HEADER_SIZE], h.outer);
     writeInner(buf[OUTER_HEADER_SIZE..HEADER_SIZE], h.inner);
@@ -80,22 +76,21 @@ fn readHeader(buf: []const u8) Header {
     };
 }
 
-// --- public API ---
 pub fn buildPacket(
-    buf:     []u8,
-    src:     [16]u8,
-    dst:     [16]u8,
+    buf: []u8,
+    src: [16]u8,
+    dst: [16]u8,
     conn_id: u64,
-    ptype:   protocol.Command,
+    ptype: protocol.Command,
     payload: []const u8,
 ) ![]u8 {
     if (buf.len < HEADER_SIZE + payload.len) return error.BufferTooSmall;
     const header = Header{
         .outer = .{
-            .magic       = MAGIC,
+            .magic = MAGIC,
             .command = @intFromEnum(ptype),
-            .src         = src,
-            .dst         = dst,
+            .src = src,
+            .dst = dst,
         },
         .inner = .{ .conn_id = conn_id },
     };
@@ -111,10 +106,10 @@ pub fn buildDiscoveryPacket(
 ) ![]u8 {
     if (buf.len < OUTER_HEADER_SIZE) return error.BufferTooSmall;
     writeOuter(buf[0..OUTER_HEADER_SIZE], .{
-        .magic   = MAGIC,
+        .magic = MAGIC,
         .command = @intFromEnum(protocol.Command.discovery),
-        .src     = src,
-        .dst     = dst,
+        .src = src,
+        .dst = dst,
     });
     return buf[0..OUTER_HEADER_SIZE];
 }
@@ -124,7 +119,7 @@ pub fn parsePacket(data: []const u8) !ParsedPacket {
     const header = readHeader(data[0..HEADER_SIZE]);
     if (header.outer.magic != MAGIC) return error.InvalidMagic;
     return ParsedPacket{
-        .header  = header,
+        .header = header,
         .command = protocol.parseCommand(header.outer.command),
         .payload = data[HEADER_SIZE..],
     };
@@ -136,12 +131,6 @@ pub fn parseOuter(data: []const u8) !OuterHeader {
     if (outer.magic != MAGIC) return error.InvalidMagic;
     return outer;
 }
-
-
-
-
-
-
 
 // TEST BEFEHL!!!!
 pub fn randomMeshAddr(io: std.Io) [16]u8 {
@@ -156,7 +145,6 @@ pub fn randomConnId(io: std.Io) u64 {
     const rand = rng_src.interface();
     return rand.int(u64);
 }
-
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
@@ -193,5 +181,5 @@ pub fn main(init: std.process.Init) !void {
 
     const parsed = try parsePacket(pkt);
     std.debug.print("Payload: {d} Byte\n", .{parsed.payload.len});
-    std.debug.print("Command: {}\n", .{parsed.command}); 
+    std.debug.print("Command: {}\n", .{parsed.command});
 }

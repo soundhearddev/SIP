@@ -51,10 +51,10 @@ pub fn validName(name: []const u8) bool {
     return true;
 }
 
-pub fn baseAddress(pub_bytes: [32]u8) [32]u8 {
-    var out: [crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+pub fn baseAddress(pub_bytes: [32]u8) [16]u8 {
+    var out: [32]u8 = undefined;
     crypto.hash.sha2.Sha256.hash(&pub_bytes, &out, .{});
-    return out;
+    return out[0..16].*;
 }
 
 pub fn genId(io: std.Io, pub_bytes: [32]u8) [32]u8 {
@@ -70,8 +70,8 @@ pub fn genId(io: std.Io, pub_bytes: [32]u8) [32]u8 {
     return out;
 }
 
-pub fn formatSipAddress(buf: []u8, base: [32]u8) ![]const u8 {
-    return std.fmt.bufPrint(buf, "sip1{x}", .{base[0..20]});
+pub fn formatSipAddress(buf: []u8, base: [16]u8) ![]const u8 {
+    return std.fmt.bufPrint(buf, "sip1{x}", .{base[0..16]});
 }
 
 pub fn createIdentity(io: std.Io, name: []const u8, password: []const u8) !KeyPair {

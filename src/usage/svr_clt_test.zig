@@ -4,7 +4,7 @@ const keyexchange = @import("keyexchange.zig");
 const header = @import("header");
 const translation = @import("translation");
 const sip = @import("sip");
-
+const protocol = @import("protocol");
 
 const DEFAULT_PORT: u16 = 9443;
 
@@ -354,6 +354,7 @@ fn performKeyExchange(
     sock: synet.Socket,
     local_identity: keyexchange.Identity,
     is_initiator: bool,
+    peer_address: ?[16]u8,
 ) ![keyexchange.DERIVED_KEY_SIZE]u8 {
     std.debug.print("[keyexchange] Generiere ephemeres Schlüsselpaar...\n", .{});
     var local_ephemeral = try keyexchange.EphemeralKeyPair.generate(io);
@@ -436,14 +437,19 @@ fn performKeyExchange(
     try peer_msg.verify();
 
     std.debug.print("[keyexchange] Peer-Identität verifiziert. Leite Session-Keys ab...\n", .{});
-    var session = try keyexchange.completeHandshake(local_identity, local_ephemeral, peer_msg, null);
+    var session = try keyexchange.completeHandshake(
+        local_identity,
+        local_ephemeral,
+        peer_msg,
+        peer_address,
+    );
     defer session.deinit();
 
     var addr_buf: [64]u8 = undefined;
     const addr_str = try sip.formatSipAddress(&addr_buf, session.peer_address);
     std.debug.print("[keyexchange] Peer-Adresse: {s}\n", .{addr_str});
 
-    return session.tx;
+    return if (is_initiator) session.tx else session.rx;
 }
 
 fn runServer(io: std.Io, allocator: std.mem.Allocator, port: u16, use_v6: bool, output_path: ?[]const u8, identity_name: []const u8) !void {
@@ -479,7 +485,23 @@ fn runServer(io: std.Io, allocator: std.mem.Allocator, port: u16, use_v6: bool, 
 
     std.debug.print("[server] Verbindung angenommen, starte Schlüsselaustausch...\n", .{});
 
-    const key = try performKeyExchange(io, allocator, conn, identity, false);
+    var disc_buf: [header.OUTER_HEADER_SIZE]u8 = undefined;
+    try synet.recvExact(conn, &disc_buf);
+    const disc = try header.parseOuter(&disc_buf);
+    if (disc.command != @intFromEnum(protocol.Command.discovery)) {
+        return error.InvalidDiscovery;
+    }
+
+    std.debug.print("[server] Discovery von meshsrc: {x}\n", .{disc.src});
+
+    var reply_buf: [header.OUTER_HEADER_SIZE]u8 = undefined;
+    var srv_src: [16]u8 = undefined;
+    @memcpy(&srv_src, identity.address[0..16]);
+    const reply = try header.buildDiscoveryPacket(&reply_buf, srv_src, disc.src);
+    try synet.sendAll(conn, reply);
+    std.debug.print("[server] Discovery-Reply gesendet\n", .{});
+
+    const key = try performKeyExchange(io, allocator, conn, identity, false, null);
     std.debug.print("[server] Schlüsselaustausch abgeschlossen.\n", .{});
 
     const encrypted = try recvFramed(allocator, conn);
@@ -549,23 +571,36 @@ fn runClient(
     }
     std.debug.print("[client] TCP-Verbindung hergestellt\n", .{});
 
+    var disc_buf: [header.OUTER_HEADER_SIZE]u8 = undefined;
+    var src: [16]u8 = undefined;
+    @memcpy(&src, identity.address[0..16]);
+    const disc_pkt = try header.buildDiscoveryPacket(&disc_buf, src, [_]u8{0} ** 16);
+
+    try synet.sendAll(sock, disc_pkt);
+    std.debug.print("[client] Discovery gesendet\n", .{});
+
+    var reply_buf: [header.OUTER_HEADER_SIZE]u8 = undefined;
+    try synet.recvExact(sock, &reply_buf);
+    const reply = try header.parseOuter(&reply_buf);
+    const peer_address = reply.src;
+    std.debug.print("[client] Peer SIP-Adresse: {x}\n", .{peer_address});
+
     std.debug.print("[client] verbunden, starte Schlüsselaustausch...\n", .{});
-    const key = try performKeyExchange(io, allocator, sock, identity, true);
+    const key = try performKeyExchange(io, allocator, sock, identity, true, peer_address);
     std.debug.print("[client] Schlüsselaustausch abgeschlossen.\n", .{});
 
     const resolved = try resolveMessage(io, allocator, message);
     defer resolved.deinit(allocator);
     const payload = resolved.bytes;
 
-    const src = [_]u8{0xAA} ++ [_]u8{0} ** 15;
-    const dst = [_]u8{0xBB} ++ [_]u8{0} ** 15;
+    const mesh_src = identity.address[0..16].*;
+    const mesh_dst = peer_address;
+
     const buf = try allocator.alloc(u8, header.HEADER_SIZE + payload.len);
     defer allocator.free(buf);
-
-    const packet = try header.buildPacket(buf, src, dst, 1, .Data, payload);
+    const packet = try header.buildPacket(buf, mesh_src, mesh_dst, 1, .Data, payload);
     const encrypted = try translation.encryptFragment(io, allocator, packet, key);
     defer allocator.free(encrypted);
-
     std.debug.print("[client] sende {d} verschlüsselte Bytes...\n", .{encrypted.len});
     try sendFramed(sock, encrypted);
     std.debug.print("[client] gesendet. Fertig.\n", .{});

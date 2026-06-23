@@ -4,11 +4,7 @@ const std = @import("std");
 
 /// Command opcodes (8 bits, so max 256 values; we use 0x01-0x08)
 pub const Command = enum(u8) {
-
-
     discovery = 0x00,
-
-
 
     /// ReadFile: request to read a file from the remote side
     /// Payload: path (null-terminated string, max 256 bytes)
@@ -58,7 +54,6 @@ pub fn parseCommand(byte: u8) Command {
     return @enumFromInt(byte);
 }
 
-
 pub fn validatePayload(allocator: std.mem.Allocator, cmd: Command, payload: []const u8) ProtocolError!void {
     const MAX_PAYLOAD_SIZE = 1024 * 1024;
 
@@ -68,7 +63,6 @@ pub fn validatePayload(allocator: std.mem.Allocator, cmd: Command, payload: []co
 
     switch (cmd) {
         .ReadFile => {
-            
             if (payload.len == 0 or payload.len > 256) {
                 return ProtocolError.MalformedPayload;
             }
@@ -78,7 +72,7 @@ pub fn validatePayload(allocator: std.mem.Allocator, cmd: Command, payload: []co
         },
 
         .WriteFile => {
-            if (payload.len < 6) { 
+            if (payload.len < 6) {
                 return ProtocolError.MalformedPayload;
             }
             const path_len = std.mem.readInt(u16, payload[0..2][0..2], .big);
@@ -136,13 +130,12 @@ pub fn validatePayload(allocator: std.mem.Allocator, cmd: Command, payload: []co
         },
 
         _ => {
-            // Unknown command 
+            // Unknown command
         },
     }
 
-    _ = allocator; 
+    _ = allocator;
 }
-
 
 pub fn extractPath(allocator: std.mem.Allocator, payload: []const u8) ProtocolError![]u8 {
     if (payload.len == 0 or payload[payload.len - 1] != 0) {
@@ -177,7 +170,6 @@ pub fn extractWriteFilePayload(allocator: std.mem.Allocator, payload: []const u8
 
     return WriteFilePayload{ .path = path, .data = data };
 }
-
 
 pub fn extractExecuteCommand(allocator: std.mem.Allocator, payload: []const u8) ProtocolError![]u8 {
     if (payload.len < 2) {

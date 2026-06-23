@@ -11,7 +11,7 @@ pub const SECRET_KEY_SIZE = X25519.secret_length;
 pub const SIGNATURE_SIZE = Ed25519.Signature.encoded_length;
 pub const IDENTITY_PUBLIC_KEY_SIZE = 32;
 pub const DERIVED_KEY_SIZE = 32;
-pub const SIP_ADDRESS_SIZE = 32;
+pub const SIP_ADDRESS_SIZE = 16;
 
 pub const KeyExchangeError = error{
     InvalidPeerPublicKey,
@@ -131,15 +131,15 @@ pub fn completeHandshake(
     const a_first = std.mem.lessThan(u8, &local_address, &peer_address);
 
     if (a_first) {
-        @memcpy(transcript[0..32], &local_address);
-        @memcpy(transcript[32..64], &peer_address);
-        @memcpy(transcript[64..96], &local_ephemeral.public_key);
-        @memcpy(transcript[96..128], &peer_message.ephemeral_public_key);
-    } else {
-        @memcpy(transcript[0..32], &peer_address);
-        @memcpy(transcript[32..64], &local_address);
+        @memcpy(transcript[0..16], &local_address);
+        @memcpy(transcript[16..32], &peer_address);
+        @memcpy(transcript[32..64], &local_ephemeral.public_key);
         @memcpy(transcript[64..96], &peer_message.ephemeral_public_key);
-        @memcpy(transcript[96..128], &local_ephemeral.public_key);
+    } else {
+        @memcpy(transcript[0..16], &peer_address);
+        @memcpy(transcript[16..32], &local_address);
+        @memcpy(transcript[32..64], &peer_message.ephemeral_public_key);
+        @memcpy(transcript[64..96], &local_ephemeral.public_key);
     }
 
     const prk = HkdfSha256.extract(&transcript, &shared_secret);
