@@ -6,21 +6,27 @@ const protocol = @import("protocol");
 const sip = @import("sip");
 pub const Command = protocol.Command;
 
-pub const OUTER_HEADER_SIZE: usize = 34;
+pub const LENGTH_SIZE: usize = 4;
+
+pub const OUTER_HEADER_SIZE: usize = 38;
 pub const INNER_HEADER_SIZE: usize = 8;
-pub const HEADER_SIZE: usize = OUTER_HEADER_SIZE + INNER_HEADER_SIZE; // 42
+pub const HEADER_SIZE: usize = OUTER_HEADER_SIZE + INNER_HEADER_SIZE; // 46
 
 // Offset  Size  Field
 // 0       1     Magic
 // 1       1     PacketType
-// 2       16    src mesh-addr
-// 18      16    dst mesh-addr
+// 2       4     Length
+// 6       16    src mesh-addr
+// 22      16    dst mesh-addr
+
 // --- inner (verschlüsselbar) ---
-// 34      8     Connection ID
+
+// 38      8     Connection ID
 
 pub const OuterHeader = struct {
     magic: u8,
     command: u8,
+    length: [4]u8,
     src: [16]u8,
     dst: [16]u8,
 };
@@ -43,21 +49,46 @@ pub const ParsedPacket = struct {
 fn writeOuter(buf: []u8, o: OuterHeader) void {
     buf[0] = o.magic;
     buf[1] = o.command;
-    @memcpy(buf[2..18], &o.src);
-    @memcpy(buf[18..34], &o.dst);
+    @memcpy(buf[2..6], &o.length);
+    @memcpy(buf[6..22], &o.src);
+    @memcpy(buf[22..38], &o.dst);
 }
 
 fn readOuter(buf: []const u8) OuterHeader {
     var o: OuterHeader = undefined;
+
     o.magic = buf[0];
     o.command = buf[1];
-    @memcpy(&o.src, buf[2..18]);
-    @memcpy(&o.dst, buf[18..34]);
+
+    @memcpy(&o.length, buf[2..6]);
+    @memcpy(&o.src, buf[6..22]);
+    @memcpy(&o.dst, buf[22..38]);
+
     return o;
 }
 
+pub const DiscoveryOuterHeader = struct {
+    magic: u8,
+    command: u8,
+    src: [16]u8,
+    dst: [16]u8,
+};
+
+fn writeDiscoveryOuter(buf: []u8, o: DiscoveryOuterHeader) void {
+    buf[0] = o.magic;
+    buf[1] = o.command;
+
+    @memcpy(buf[2..18], &o.src);
+    @memcpy(buf[18..34], &o.dst);
+}
+
 fn writeInner(buf: []u8, i: InnerHeader) void {
-    std.mem.writeInt(u64, buf[0..8], i.conn_id, .little);
+    std.mem.writeInt(
+        u64,
+        buf[0..8],
+        i.conn_id,
+        .little,
+    );
 }
 
 fn readInner(buf: []const u8) InnerHeader {
@@ -85,10 +116,15 @@ pub fn buildPacket(
     payload: []const u8,
 ) ![]u8 {
     if (buf.len < HEADER_SIZE + payload.len) return error.BufferTooSmall;
+    var len_buf: [4]u8 = undefined;
+
+    std.mem.writeInt(u32, &len_buf, @intCast(payload.len), .big);
+
     const header = Header{
         .outer = .{
             .magic = MAGIC,
             .command = @intFromEnum(ptype),
+            .length = len_buf,
             .src = src,
             .dst = dst,
         },
@@ -104,14 +140,16 @@ pub fn buildDiscoveryPacket(
     src: [16]u8,
     dst: [16]u8,
 ) ![]u8 {
-    if (buf.len < OUTER_HEADER_SIZE) return error.BufferTooSmall;
-    writeOuter(buf[0..OUTER_HEADER_SIZE], .{
+    if (buf.len < 34) return error.BufferTooSmall;
+
+    writeDiscoveryOuter(buf[0..34], .{
         .magic = MAGIC,
         .command = @intFromEnum(protocol.Command.discovery),
         .src = src,
         .dst = dst,
     });
-    return buf[0..OUTER_HEADER_SIZE];
+
+    return buf[0..34];
 }
 
 pub fn parsePacket(data: []const u8) !ParsedPacket {
@@ -132,54 +170,103 @@ pub fn parseOuter(data: []const u8) !OuterHeader {
     return outer;
 }
 
-// TEST BEFEHL!!!!
-pub fn randomMeshAddr(io: std.Io) [16]u8 {
-    const rng_src: std.Random.IoSource = .{ .io = io };
-    const rand = rng_src.interface();
-    var addr: [16]u8 = undefined;
-    rand.bytes(&addr);
-    return addr;
+const testing = std.testing;
+
+test "buildPacket schreibt MAGIC und Command korrekt" {
+    const allocator = testing.allocator;
+    _ = allocator;
+
+    var buf: [HEADER_SIZE + 4]u8 = undefined;
+    const src = [_]u8{0x01} ** 16;
+    const dst = [_]u8{0x02} ** 16;
+
+    const pkt = try buildPacket(&buf, src, dst, 99, .Data, "test");
+
+    try testing.expectEqual(MAGIC, pkt[0]);
+    try testing.expectEqual(@intFromEnum(protocol.Command.Data), pkt[1]);
 }
-pub fn randomConnId(io: std.Io) u64 {
-    const rng_src: std.Random.IoSource = .{ .io = io };
-    const rand = rng_src.interface();
-    return rand.int(u64);
+
+test "buildPacket schreibt src und dst korrekt" {
+    var buf: [HEADER_SIZE + 0]u8 = undefined;
+    const src = [_]u8{0xAA} ** 16;
+    const dst = [_]u8{0xBB} ** 16;
+
+    const pkt = try buildPacket(&buf, src, dst, 0, .Data, "");
+
+    try testing.expectEqualSlices(u8, &src, pkt[6..22]);
+    try testing.expectEqualSlices(u8, &dst, pkt[22..38]);
 }
 
-pub fn main(init: std.process.Init) !void {
-    const io = init.io;
-    const allocator = std.heap.page_allocator;
+test "buildPacket schreibt conn_id korrekt (little-endian)" {
+    var buf: [HEADER_SIZE]u8 = undefined;
+    const src = [_]u8{0x00} ** 16;
+    const dst = [_]u8{0x00} ** 16;
 
-    const cwd = std.Io.Dir.cwd();
-    const file = try cwd.openFile(io, "../dump/linux.svg", .{ .mode = .read_only });
-    defer file.close(io);
+    const pkt = try buildPacket(&buf, src, dst, 0xDEADBEEFCAFEBABE, .Data, "");
 
-    const file_size = (try file.stat(io)).size;
-    const bytes = try allocator.alloc(u8, file_size);
-    defer allocator.free(bytes);
+    const conn_id = std.mem.readInt(u64, pkt[38..46], .little);
+    try testing.expectEqual(@as(u64, 0xDEADBEEFCAFEBABE), conn_id);
+}
 
-    var fr = file.reader(io, bytes);
-    try fr.interface.fill(file_size);
+test "buildPacket schreibt payload korrekt" {
+    const payload = "hallo welt";
+    var buf: [HEADER_SIZE + payload.len]u8 = undefined;
+    const src = [_]u8{0x01} ** 16;
+    const dst = [_]u8{0x02} ** 16;
 
-    const src = randomMeshAddr(init.io);
-    const dst = randomMeshAddr(init.io);
+    const pkt = try buildPacket(&buf, src, dst, 1, .Data, payload);
 
-    const conn_id = randomConnId(init.io);
+    try testing.expectEqualSlices(u8, payload, pkt[HEADER_SIZE..]);
+}
 
-    const total = HEADER_SIZE + bytes.len;
-    const buf = try allocator.alloc(u8, total);
-    defer allocator.free(buf);
+test "parsePacket Roundtrip" {
+    const payload = "roundtrip test";
+    var buf: [HEADER_SIZE + payload.len]u8 = undefined;
+    const src = [_]u8{0x11} ** 16;
+    const dst = [_]u8{0x22} ** 16;
 
-    const pkt = try buildPacket(buf, src, dst, conn_id, .discovery, bytes);
-
-    std.debug.print("HEADER HEX:\n", .{});
-    for (pkt[0..HEADER_SIZE], 0..) |b, i| {
-        std.debug.print("{d:0>3} ", .{b});
-        if ((i + 1) % 8 == 0) std.debug.print("\n", .{});
-    }
-    std.debug.print("\nPaket gebaut: {d} Bytes\n", .{pkt.len});
-
+    const pkt = try buildPacket(&buf, src, dst, 0xCAFE, .Data, payload);
     const parsed = try parsePacket(pkt);
-    std.debug.print("Payload: {d} Byte\n", .{parsed.payload.len});
-    std.debug.print("Command: {}\n", .{parsed.command});
+
+    try testing.expectEqual(MAGIC, parsed.header.outer.magic);
+    try testing.expectEqualSlices(u8, &src, &parsed.header.outer.src);
+    try testing.expectEqualSlices(u8, &dst, &parsed.header.outer.dst);
+    try testing.expectEqual(@as(u64, 0xCAFE), parsed.header.inner.conn_id);
+    try testing.expectEqualSlices(u8, payload, parsed.payload);
+}
+
+test "parsePacket lehnt falsches Magic ab" {
+    var buf: [HEADER_SIZE]u8 = undefined;
+    const src = [_]u8{0x00} ** 16;
+    const dst = [_]u8{0x00} ** 16;
+
+    _ = try buildPacket(&buf, src, dst, 0, .Data, "");
+    buf[0] = 0x00; // Magic korrumpieren
+
+    try testing.expectError(error.InvalidMagic, parsePacket(&buf));
+}
+
+test "parsePacket lehnt zu kurze Daten ab" {
+    const too_short = [_]u8{0} ** 10;
+    try testing.expectError(error.PacketTooSmall, parsePacket(&too_short));
+}
+
+test "buildPacket lehnt zu kleinen Buffer ab" {
+    var buf: [HEADER_SIZE - 1]u8 = undefined;
+    const src = [_]u8{0x00} ** 16;
+    const dst = [_]u8{0x00} ** 16;
+
+    try testing.expectError(error.BufferTooSmall, buildPacket(&buf, src, dst, 0, .Data, ""));
+}
+
+test "parseOuter liest src/dst korrekt" {
+    var buf: [HEADER_SIZE]u8 = undefined;
+    const src = [_]u8{0x33} ** 16;
+    const dst = [_]u8{0x44} ** 16;
+
+    _ = try buildPacket(&buf, src, dst, 0, .Data, "");
+    const outer = try parseOuter(&buf);
+
+    try testing.expectEqualSlices(u8, &src, &outer.src);
+    try testing.expectEqualSlices(u8, &dst, &outer.dst);
 }

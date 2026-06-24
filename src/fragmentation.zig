@@ -52,7 +52,7 @@ pub fn fragmentData(
         const chunk = data[start..end];
 
         const is_last = (seq == total_chunks - 1);
-        const flags: u8 = if (is_last) FLAG_LAST else 0x00;
+        const flags: u8 = if (is_last) FLAG_LAST else 0x01;
 
         const buf = try allocator.alloc(u8, header.HEADER_SIZE + chunk.len);
         errdefer allocator.free(buf);

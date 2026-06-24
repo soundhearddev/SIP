@@ -1,3 +1,6 @@
+// NUR LINUX
+// TODO: kompatiblität und so
+
 const std = @import("std");
 const linux = std.os.linux;
 const posix = std.posix;

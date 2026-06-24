@@ -30,7 +30,7 @@ fn buildAddress(
             if (ttl) |t| {
                 std.debug.print("[✓] {s} (TTL: {d}s)\n", .{ new_addr, t });
             } else {
-                td.debug.print("[✓] {s} (Permanent)\n", .{new_addr});
+                std.debug.print("[✓] {s} (Permanent)\n", .{new_addr});
             }
         } else {
             std.debug.print("[✗] Fehler bei {s}\n", .{new_addr});

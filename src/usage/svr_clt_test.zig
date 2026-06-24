@@ -504,17 +504,12 @@ fn runServer(io: std.Io, allocator: std.mem.Allocator, port: u16, use_v6: bool, 
     const key = try performKeyExchange(io, allocator, conn, identity, false, null);
     std.debug.print("[server] Schlüsselaustausch abgeschlossen.\n", .{});
 
-    const encrypted = try recvFramed(allocator, conn);
-    defer allocator.free(encrypted);
-    std.debug.print("[server] {d} verschlüsselte Bytes empfangen.\n", .{encrypted.len});
-
-    const decrypted = translation.decryptFragment(allocator, encrypted, key) catch |err| {
-        std.debug.print("[server] Entschlüsseln/Prüfen fehlgeschlagen: {}\n", .{err});
+    const pkt = translation.readInboundPacket(conn, allocator, key) catch |err| {
+        std.debug.print("[server] Lesen/Entschlüsseln fehlgeschlagen: {}\n", .{err});
         return err;
     };
-    defer allocator.free(decrypted);
-
-    const parsed = try header.parsePacket(decrypted);
+    defer translation.freeInboundPacket(allocator, pkt);
+    const parsed = pkt.parsed;
 
     std.debug.print(
         "[server] SIP-Paket erfolgreich entschlüsselt und geparst.\n" ++
@@ -596,13 +591,10 @@ fn runClient(
     const mesh_src = identity.address[0..16].*;
     const mesh_dst = peer_address;
 
-    const buf = try allocator.alloc(u8, header.HEADER_SIZE + payload.len);
-    defer allocator.free(buf);
-    const packet = try header.buildPacket(buf, mesh_src, mesh_dst, 1, .Data, payload);
-    const encrypted = try translation.encryptFragment(io, allocator, packet, key);
-    defer allocator.free(encrypted);
-    std.debug.print("[client] sende {d} verschlüsselte Bytes...\n", .{encrypted.len});
-    try sendFramed(sock, encrypted);
+    const wire = try translation.buildOutboundPacket(io, allocator, mesh_src, mesh_dst, 1, .Data, payload, key);
+    defer allocator.free(wire);
+    std.debug.print("[client] sende {d} Byte (inkl. Längenpräfix) via translation.buildOutboundPacket...\n", .{wire.len});
+    try synet.sendAll(sock, wire);
     std.debug.print("[client] gesendet. Fertig.\n", .{});
 }
 

@@ -201,6 +201,9 @@ fn storeIdentity(io: std.Io, name: []const u8, kp: KeyPair, password: []const u8
     {
         const f = try cwd.createFile(io, priv_path, .{});
         defer f.close(io);
+
+        // das ist dumm es so zu machen
+        // TODO: neuen weg zum spiechern der keys also ein ienem richitneg oder und so chmod
         const rc = std.os.linux.syscall2(.fchmod, @intCast(f.handle), 0o600);
         if (rc != 0) return SipError.ChmodFailed;
         var buf: [256]u8 = undefined;

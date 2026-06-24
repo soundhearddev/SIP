@@ -1,42 +1,40 @@
-//! Protocol definition for packet_type commands (8 bits = 8 possible commands).
-//! This layer sits between header (raw bytes) and application logic.
 const std = @import("std");
 
-/// Command opcodes (8 bits, so max 256 values; we use 0x01-0x08)
+/// 256 values
 pub const Command = enum(u8) {
-    discovery = 0x00,
+    discovery = 0x01,
 
     /// ReadFile: request to read a file from the remote side
     /// Payload: path (null-terminated string, max 256 bytes)
-    ReadFile = 0x01,
+    ReadFile = 0x02,
 
     /// WriteFile: request to write/update a file on the remote side
     /// Payload: [path_len:u16][path:[]u8][data_len:u32][data:[]u8]
-    WriteFile = 0x02,
+    WriteFile = 0x03,
 
     /// ListDir: request to list directory contents
     /// Payload: path (null-terminated string, max 256 bytes)
-    ListDir = 0x03,
+    ListDir = 0x04,
 
     /// Execute: request to execute a command/script on the remote side
     /// Payload: [cmd_len:u16][cmd:[]u8]
-    Execute = 0x04,
+    Execute = 0x05,
 
     /// Data: generic data transfer (user-defined content)
     /// Payload: arbitrary bytes, application-specific interpretation
-    Data = 0x05,
+    Data = 0x06,
 
     /// Flush: signal to flush/commit any pending operations
     /// Payload: empty (or optional metadata)
-    Flush = 0x06,
+    Flush = 0x07,
 
     /// Close: signal to close connection/stream gracefully
     /// Payload: empty (or optional reason/code)
-    Close = 0x07,
+    Close = 0x08,
 
     /// Keepalive: heartbeat to prevent timeout
     /// Payload: empty (or optional timestamp)
-    Keepalive = 0x08,
+    Keepalive = 0x09,
 
     /// Unknown: used for graceful handling of unrecognized commands
     _,
@@ -107,7 +105,7 @@ pub fn validatePayload(allocator: std.mem.Allocator, cmd: Command, payload: []co
             }
         },
 
-        .Data => {
+        .discovery, .Data => {
             // No specific validation
         },
 
@@ -215,9 +213,12 @@ test "validate WriteFile payload" {
 
 test "parse command" {
     const cmd1 = parseCommand(0x01);
-    try std.testing.expectEqual(Command.ReadFile, cmd1);
+    try std.testing.expectEqual(Command.discovery, cmd1);
 
-    const cmd2 = parseCommand(0x08);
+    const cmd_readfile = parseCommand(0x02);
+    try std.testing.expectEqual(Command.ReadFile, cmd_readfile);
+
+    const cmd2 = parseCommand(0x09);
     try std.testing.expectEqual(Command.Keepalive, cmd2);
 
     const cmd_unknown = parseCommand(0xFF);
