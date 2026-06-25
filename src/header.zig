@@ -2,7 +2,7 @@ const std = @import("std");
 
 pub const MAGIC: u8 = 0xA9;
 
-const protocol = @import("protocol");
+const protocol = @import("protocol.zig");
 const sip = @import("sip");
 pub const Command = protocol.Command;
 

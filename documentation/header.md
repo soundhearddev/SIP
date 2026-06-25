@@ -296,35 +296,7 @@ benutzt wird, zeigt `payload` auf ungültigen Speicher.
 
 ---
 
-## 8. Die `get_unix_time`-Anbindung an C
-
-```zig
-extern fn get_unix_time() u32;
-```
-
-```
-  header.zig  ──extern fn Aufruf──►  time.c (separat kompiliert)
-                                       #include <time.h>
-                                       uint32_t get_unix_time(void) {
-                                           return (uint32_t)time(NULL);
-                                       }
-```
-
-
-```
-zig run src/header.zig -lc src/time.c
-zig test src/header.zig -lc src/time.c
-```
-
-Fehlt `time.c` beim Linken, bekommt man einen Linker-Fehler
-(`undefined symbol: get_unix_time`) — das Programm kompiliert zwar als
-Zig-Code, aber das fertige Binary lässt sich nicht bauen, weil die
-Funktion nirgendwo tatsächlich definiert ist.
-
-
-
-
-## 9. Kurz zusammengefasst
+## 8. Kurz zusammengefasst
 
 ```
   buildPacket:   Felder (Struct) → in vom Aufrufer bereitgestellten

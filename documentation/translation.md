@@ -431,16 +431,8 @@ größerem Sicherheitsabstand (z.B. XChaCha20-Poly1305 mit 192-Bit-Nonce
 statt 96-Bit) — XChaCha20-Poly1305 erlaubt bei zufällig gewählten Nonces eine bessere Sicherheit als die ursprüngliche Konstruktion. Das wäre aber ein größerer Umbau (andere Nonce-Größe im
 Wire-Format), kein kleiner Patch.
 
-### 5.2 `get_unix_time` über C — könnte native Zig-Lösung werden
 
-`header.zig` deklariert `get_unix_time` als `extern fn` und braucht dafür
-`time.c` gelinkt. Zig 0.16 hat dafür eine native Alternative
-(`std.Io.Timestamp`), die ganz ohne C-Linking funktionieren würde. Das
-würde den Build vereinfachen (kein `-lc src/time.c` mehr nötig), ist
-aber eine Änderung an `header.zig`, die ich nicht einfach im Hintergrund
-machen wollte, ohne dass du das explizit willst.
-
-### 5.3 Cleanup für unvollständige Reassemblies bleibt offen
+### 5.2 Cleanup für unvollständige Reassemblies bleibt offen
 
 Laut dem ursprünglichen Design-Rundown ist das bewusst **nicht** Aufgabe
 von `translation.zig` — ein Server-seitiger periodischer Cleanup-Thread

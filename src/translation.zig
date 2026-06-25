@@ -1,7 +1,7 @@
 const std = @import("std");
-const header = @import("header");
-const protocol = @import("protocol");
-const synet = @import("synet");
+const header = @import("header.zig");
+const protocol = @import("protocol.zig");
+const synet = @import("synet.zig");
 
 pub const KEY_SIZE: usize = 32;
 pub const NONCE_SIZE: usize = 12;
