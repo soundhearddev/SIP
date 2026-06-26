@@ -187,16 +187,6 @@ pub fn decryptPacket(
     return out;
 }
 
-// ============================================================
-// Reassembly: nimmt eingehende DataChunk/DataEnd-Pakete entgegen,
-// schreibt deren Payload als Datei auf Disk und meldet, sobald
-// ein Transfer (identifiziert über conn_id) vollständig ist.
-//
-// translation.zig entscheidet bewusst NICHT, was mit den fertigen
-// Chunk-Dateien passiert (kein Zusammenfügen, kein finaler Pfad) -
-// das bleibt Aufgabe des Aufrufers (z.B. ein sip-daemon).
-// ============================================================
-
 pub const ReassemblyError = error{
     UnexpectedSequenceNumber,
     UnknownTransfer,
@@ -216,13 +206,7 @@ const TransferState = struct {
 };
 
 pub const FeedResult = union(enum) {
-    /// Paket war kein Chunk-Paket (z.B. .Data) oder Transfer ist noch nicht fertig.
     pending,
-    /// Transfer ist komplett. Enthält die Pfade aller Chunk-Dateien dieses
-    /// Transfers, in aufsteigender seq_num-Reihenfolge. Der Aufrufer ist für
-    /// das spätere Löschen dieser Dateien verantwortlich.
-    /// Speicher (die Slice selbst sowie die einzelnen Pfad-Strings) gehört dem
-    /// Aufrufer und muss von ihm freigegeben werden.
     complete: [][]u8,
 };
 
@@ -292,19 +276,11 @@ pub const Reassembler = struct {
         state.next_seq += 1;
     }
 
-    /// Nimmt ein bereits entschlüsseltes & geparstes Paket entgegen.
-    /// - command == .DataChunk: Chunk wird gespeichert, .pending wird zurückgegeben.
-    /// - command == .DataEnd: letzter Chunk wird gespeichert, Transfer ist fertig,
-    ///   .complete mit allen Chunk-Pfaden (Reihenfolge!) wird zurückgegeben. Der
-    ///   Reassembler vergisst danach diesen Transfer (conn_id kann wiederverwendet
-    ///   werden).
-    /// - jedes andere Command: .pending, Reassembler tut nichts (kein Chunking).
     pub fn feed(self: *Reassembler, packet: header.ParsedPacket) !FeedResult {
         const conn_id = packet.header.inner.conn_id;
         const seq_num = packet.header.inner.seq_num;
 
         switch (packet.command) {
-            // Ein normales .Data Paket verhält sich wie ein Single-Chunk-Transfer
             .Data => {
                 try self.writeChunk(conn_id, seq_num, packet.payload);
 

@@ -3,22 +3,11 @@ const header = @import("header.zig");
 const protocol = @import("protocol.zig");
 const translation = @import("translation.zig");
 
-// Fragmentierung kommt nur zum Einsatz, wenn eine Payload das Limit für ein
-// einzelnes Paket überschreitet (translation.MAX_PACKET_SIZE). Für alles
-// darunter wird ganz normal translation.buildOutboundPacket mit
-// command = .Data verwendet - kein Chunking nötig.
-//
-// fragmentation.zig baut nur die fertigen, verschlüsselten Wire-Pakete
-// (DataChunk für alle bis auf den letzten, DataEnd für den letzten).
-// Das tatsächliche Senden über den Socket bleibt Aufgabe des Aufrufers.
-
 pub const FragmentationError = error{
     TooManyChunks,
     BufferTooSmall,
 } || std.mem.Allocator.Error || translation.TranslationError;
 
-// Etwas kleiner als translation.MAX_PACKET_SIZE wählen, um Spielraum für
-// zukünftige Overheads zu lassen (z.B. falls der Header nochmal wächst).
 pub const CHUNK_SIZE: usize = translation.MAX_PACKET_SIZE - (1024 * 1024); // 15 MiB
 
 pub const MAX_CHUNKS: usize = std.math.maxInt(u32);
@@ -33,14 +22,6 @@ pub const WirePacketList = struct {
     }
 };
 
-/// Baut die fertigen, verschlüsselten Wire-Pakete für eine (potenziell große)
-/// Payload. Payloads <= translation.MAX_PACKET_SIZE werden als ein einzelnes
-/// .Data-Paket gebaut. Größere Payloads werden in CHUNK_SIZE-Stücke
-/// aufgeteilt: alle bis auf den letzten Chunk als .DataChunk, der letzte als
-/// .DataEnd - jeweils mit derselben conn_id und aufsteigender seq_num (0-basiert).
-///
-/// Der Aufrufer ist für das Senden der zurückgegebenen Pakete (in Reihenfolge!)
-/// sowie für das spätere Freigeben (WirePacketList.deinit) verantwortlich.
 pub fn fragmentPayload(
     io: std.Io,
     allocator: std.mem.Allocator,

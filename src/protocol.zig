@@ -39,6 +39,7 @@ pub const Command = enum(u8) {
     /// DataChunk: Teil eines mehrteiligen Datentransfers (nicht der letzte Chunk)
     /// Payload: arbitrary bytes
     DataChunk = 0x0A,
+
     /// DataEnd: letzter Chunk eines mehrteiligen Datentransfers
     /// Payload: arbitrary bytes (kann auch leer sein, falls vorheriger Chunk exakt aufging)
     DataEnd = 0x0B,
