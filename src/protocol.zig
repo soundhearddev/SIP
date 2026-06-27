@@ -4,25 +4,25 @@ const std = @import("std");
 pub const Command = enum(u8) {
     discovery = 0x01,
 
-    /// ReadFile: request to read a file from the remote side
-    /// Payload: path (null-terminated string, max 256 bytes)
-    ReadFile = 0x02,
+    /// Data: generic data transfer (user-defined content)
+    /// Payload: arbitrary bytes, application-specific interpretation
+    Data = 0x02,
 
-    /// WriteFile: request to write/update a file on the remote side
-    /// Payload: [path_len:u16][path:[]u8][data_len:u32][data:[]u8]
-    WriteFile = 0x03,
+    /// DataChunk: Teil eines mehrteiligen Datentransfers (nicht der letzte Chunk)
+    /// Payload: arbitrary bytes
+    DataChunk = 0x03,
 
-    /// ListDir: request to list directory contents
-    /// Payload: path (null-terminated string, max 256 bytes)
-    ListDir = 0x04,
+    /// DataEnd: letzter Chunk eines mehrteiligen Datentransfers
+    /// Payload: arbitrary bytes (kann auch leer sein, falls vorheriger Chunk exakt aufging)
+    DataEnd = 0x04,
 
     /// Execute: request to execute a command/script on the remote side
     /// Payload: [cmd_len:u16][cmd:[]u8]
     Execute = 0x05,
 
-    /// Data: generic data transfer (user-defined content)
-    /// Payload: arbitrary bytes, application-specific interpretation
-    Data = 0x06,
+    /// Keepalive: heartbeat to prevent timeout
+    /// Payload: empty (or optional timestamp)
+    Keepalive = 0x06,
 
     /// Flush: signal to flush/commit any pending operations
     /// Payload: empty (or optional metadata)
@@ -32,17 +32,17 @@ pub const Command = enum(u8) {
     /// Payload: empty (or optional reason/code)
     Close = 0x08,
 
-    /// Keepalive: heartbeat to prevent timeout
-    /// Payload: empty (or optional timestamp)
-    Keepalive = 0x09,
+    /// ReadFile: request to read a file from the remote side
+    /// Payload: path (null-terminated string, max 256 bytes)
+    ReadFile = 0x09,
 
-    /// DataChunk: Teil eines mehrteiligen Datentransfers (nicht der letzte Chunk)
-    /// Payload: arbitrary bytes
-    DataChunk = 0x0A,
+    /// WriteFile: request to write/update a file on the remote side
+    /// Payload: [path_len:u16][path:[]u8][data_len:u32][data:[]u8]
+    WriteFile = 0x0A,
 
-    /// DataEnd: letzter Chunk eines mehrteiligen Datentransfers
-    /// Payload: arbitrary bytes (kann auch leer sein, falls vorheriger Chunk exakt aufging)
-    DataEnd = 0x0B,
+    /// ListDir: request to list directory contents
+    /// Payload: path (null-terminated string, max 256 bytes)
+    ListDir = 0x0B,
 
     /// Unknown: used for graceful handling of unrecognized commands
     _,
