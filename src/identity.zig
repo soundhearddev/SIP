@@ -17,6 +17,10 @@ pub const SipError = error{
     InvalidLength,
 };
 
+pub fn formatSipAddress(buf: []u8, name: []const u8, base: [16]u8) ![]const u8 {
+    return std.fmt.bufPrint(buf, "{s}.{x}", .{ name, base });
+}
+
 pub fn generateKeyPair(io: std.Io) KeyPair {
     const kp = crypto.sign.Ed25519.KeyPair.generate(io);
     return .{ .public = kp.public_key.toBytes(), .secret = kp.secret_key.toBytes() };

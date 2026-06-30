@@ -1,5 +1,6 @@
 const std = @import("std");
 const identity = @import("identity.zig");
+const synet = @import("synet.zig");
 
 const X25519 = std.crypto.dh.X25519;
 const Ed25519 = std.crypto.sign.Ed25519;
@@ -139,6 +140,80 @@ pub fn completeHandshake(
         .peer_address = peer_address,
         .conn_id = conn_id,
     };
+}
+
+fn sendFramed(sock: synet.Socket, data: []const u8) !void {
+    var len_buf: [4]u8 = undefined;
+    std.mem.writeInt(u32, &len_buf, @intCast(data.len), .big);
+    try synet.sendAll(sock, &len_buf);
+    try synet.sendAll(sock, data);
+}
+
+fn recvFramed(allocator: std.mem.Allocator, sock: synet.Socket) ![]u8 {
+    var len_buf: [4]u8 = undefined;
+    try synet.recvExact(sock, &len_buf);
+    const len = std.mem.readInt(u32, &len_buf, .big);
+
+    const MAX_FRAME_SIZE: u32 = 256 * 1024 * 1024;
+    if (len > MAX_FRAME_SIZE) return error.FrameTooLarge;
+
+    const buf = try allocator.alloc(u8, len);
+    errdefer allocator.free(buf);
+    try synet.recvExact(sock, buf);
+    return buf;
+}
+
+const HANDSHAKE_MSG_SIZE = IDENTITY_PUBLIC_KEY_SIZE + PUBLIC_KEY_SIZE + SIGNATURE_SIZE;
+
+fn encodeMessage(msg: HandshakeMessage) [HANDSHAKE_MSG_SIZE]u8 {
+    var buf: [HANDSHAKE_MSG_SIZE]u8 = undefined;
+    @memcpy(buf[0..IDENTITY_PUBLIC_KEY_SIZE], &msg.identity_public_key);
+    @memcpy(buf[IDENTITY_PUBLIC_KEY_SIZE .. IDENTITY_PUBLIC_KEY_SIZE + PUBLIC_KEY_SIZE], &msg.ephemeral_public_key);
+    @memcpy(buf[IDENTITY_PUBLIC_KEY_SIZE + PUBLIC_KEY_SIZE ..], &msg.signature);
+    return buf;
+}
+
+fn decodeMessage(data: []const u8) !HandshakeMessage {
+    if (data.len != HANDSHAKE_MSG_SIZE) return error.InvalidPeerMessage;
+    var msg: HandshakeMessage = undefined;
+    @memcpy(&msg.identity_public_key, data[0..IDENTITY_PUBLIC_KEY_SIZE]);
+    @memcpy(&msg.ephemeral_public_key, data[IDENTITY_PUBLIC_KEY_SIZE .. IDENTITY_PUBLIC_KEY_SIZE + PUBLIC_KEY_SIZE]);
+    @memcpy(&msg.signature, data[IDENTITY_PUBLIC_KEY_SIZE + PUBLIC_KEY_SIZE ..]);
+    return msg;
+}
+
+pub fn performKeyExchange(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    sock: synet.Socket,
+    local_keys: identity.KeyPair,
+    local_address: [SIP_ADDRESS_SIZE]u8,
+    is_initiator: bool,
+    peer_address: ?[SIP_ADDRESS_SIZE]u8,
+) !SessionKeys {
+    var local_ephemeral = try EphemeralKeyPair.generate(io);
+    defer local_ephemeral.deinit();
+
+    const local_msg = try HandshakeMessage.create(local_keys, local_ephemeral);
+    var peer_msg: HandshakeMessage = undefined;
+
+    if (is_initiator) {
+        const local_buf = encodeMessage(local_msg);
+        try sendFramed(sock, &local_buf);
+
+        const peer_buf = try recvFramed(allocator, sock);
+        defer allocator.free(peer_buf);
+        peer_msg = try decodeMessage(peer_buf);
+    } else {
+        const peer_buf = try recvFramed(allocator, sock);
+        defer allocator.free(peer_buf);
+        peer_msg = try decodeMessage(peer_buf);
+
+        const local_buf = encodeMessage(local_msg);
+        try sendFramed(sock, &local_buf);
+    }
+
+    return completeHandshake(local_keys, local_address, local_ephemeral, peer_msg, peer_address);
 }
 
 test "handshake derives matching, opposite-direction session keys" {
